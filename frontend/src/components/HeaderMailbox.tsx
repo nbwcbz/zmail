@@ -1,6 +1,7 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useContext } from 'react';
 import { useTranslation } from 'react-i18next';
-import { createRandomMailbox, createCustomMailbox } from '../utils/api';
+import { createRandomMailbox, createCustomMailbox, getMailbox } from '../utils/api';
+import { MailboxContext } from '../contexts/MailboxContext';
 
 interface HeaderMailboxProps {
   mailbox: Mailbox | null;
@@ -18,9 +19,12 @@ const HeaderMailbox: React.FC<HeaderMailboxProps> = ({
   isLoading
 }) => {
   const { t } = useTranslation();
+  const { savedMailboxes, deleteMailboxFromSaved, clearAllMailboxes } = useContext(MailboxContext);
+  
   const [isCustomMode, setIsCustomMode] = useState(false);
   const [customAddress, setCustomAddress] = useState('');
   const [selectedDomain, setSelectedDomain] = useState(domain);
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isActionLoading, setIsActionLoading] = useState(false);
   const [showCopyTooltip, setShowCopyTooltip] = useState(false);
   const [copyError, setCopyError] = useState<string | null>(null);
@@ -33,10 +37,42 @@ const HeaderMailbox: React.FC<HeaderMailboxProps> = ({
   const successMessageTimeoutRef = useRef<number | null>(null);
   const errorMessageTimeoutRef = useRef<number | null>(null);
   
+  // 当邮箱变化时，同步更新选中的域名
+  useEffect(() => {
+    if (mailbox) {
+      if (mailbox.domain) {
+        setSelectedDomain(mailbox.domain);
+      } else if (mailbox.address.includes('@')) {
+        const parts = mailbox.address.split('@');
+        setSelectedDomain(parts[1]);
+      }
+    }
+  }, [mailbox]);
+
+  // 点击外部关闭下拉菜单
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (
+        isDropdownOpen &&
+        !target.closest('.dropdown-container')
+      ) {
+        setIsDropdownOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isDropdownOpen]);
+  
   // 当props中的domain变化时更新selectedDomain
   useEffect(() => {
-    setSelectedDomain(domain);
-  }, [domain]);
+    if (!mailbox || !mailbox.domain) {
+      setSelectedDomain(domain);
+    }
+  }, [domain, mailbox]);
   
   // 清除提示的定时器
   useEffect(() => {
@@ -101,7 +137,10 @@ const HeaderMailbox: React.FC<HeaderMailboxProps> = ({
     setIsActionLoading(false);
     
     if (result.success && result.mailbox) {
-      onMailboxChange(result.mailbox);
+      onMailboxChange({
+        ...result.mailbox,
+        domain: selectedDomain
+      });
       
       // 显示更新成功提示
       setShowRefreshSuccess(true);
@@ -145,7 +184,10 @@ const HeaderMailbox: React.FC<HeaderMailboxProps> = ({
     setIsActionLoading(false);
     
     if (result.success && result.mailbox) {
-      onMailboxChange(result.mailbox);
+      onMailboxChange({
+        ...result.mailbox,
+        domain: selectedDomain
+      });
       
       // 显示成功消息在表单下方
       setCustomAddressSuccess(t('mailbox.createSuccess'));
@@ -166,7 +208,26 @@ const HeaderMailbox: React.FC<HeaderMailboxProps> = ({
         String(result.error).includes('已存在');
       
       if (isAddressExistsError) {
-        setCustomAddressError(t('mailbox.addressExists'));
+        // 尝试从后台获取已存在的邮箱并切换
+        const fetchResult = await getMailbox(customAddress);
+        if (fetchResult.success && fetchResult.mailbox) {
+          onMailboxChange({
+            ...fetchResult.mailbox,
+            domain: selectedDomain
+          });
+          setCustomAddressSuccess(t('mailbox.createSuccess'));
+          
+          if (successMessageTimeoutRef.current) {
+            window.clearTimeout(successMessageTimeoutRef.current);
+          }
+          successMessageTimeoutRef.current = window.setTimeout(() => {
+            setIsCustomMode(false);
+            setCustomAddress('');
+            setCustomAddressSuccess(null);
+          }, 3000);
+        } else {
+          setCustomAddressError(t('mailbox.addressExists'));
+        }
       } else {
         setCustomAddressError(t('mailbox.createFailed'));
       }
@@ -198,7 +259,14 @@ const HeaderMailbox: React.FC<HeaderMailboxProps> = ({
   
   // 切换域名
   const handleDomainChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    setSelectedDomain(e.target.value);
+    const newDomain = e.target.value;
+    setSelectedDomain(newDomain);
+    if (mailbox) {
+      onMailboxChange({
+        ...mailbox,
+        domain: newDomain
+      });
+    }
   };
   
   // 按钮基础样式
@@ -277,8 +345,8 @@ const HeaderMailbox: React.FC<HeaderMailboxProps> = ({
           <div className="flex items-center">
             {/* 电脑端邮箱地址显示 */}
             <div className="hidden sm:flex items-center">
-              <code className="bg-muted px-2 py-1 rounded text-sm font-medium">
-                {mailbox.address}@
+              <code className="bg-muted px-2 py-1 rounded text-sm font-medium flex items-center">
+                <span>{mailbox.address}@</span>
                 <select 
                   value={selectedDomain}
                   onChange={handleDomainChange}
@@ -290,13 +358,88 @@ const HeaderMailbox: React.FC<HeaderMailboxProps> = ({
                 </select>
               </code>
               
+              {/* 切换邮箱下拉菜单 */}
+              <div className="relative dropdown-container">
+                <button
+                  type="button"
+                  onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+                  className={`w-8 h-8 ${buttonBaseClass} hover:bg-primary/20 hover:text-primary hover:scale-110 ml-1`}
+                  title={t('mailbox.switch')}
+                  aria-label={t('mailbox.switch')}
+                >
+                  <i className="fas fa-exchange-alt text-sm"></i>
+                </button>
+                
+                {isDropdownOpen && (
+                  <div className="absolute left-0 mt-2 bg-popover text-popover-foreground border rounded-md shadow-lg py-2 w-64 z-50 text-left">
+                    <div className="flex items-center justify-between px-3 py-1.5 border-b border-muted">
+                      <span className="text-xs font-semibold text-muted-foreground">{t('mailbox.savedMailboxes')}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          clearAllMailboxes();
+                          setIsDropdownOpen(false);
+                        }}
+                        className="text-xs text-red-500 hover:text-red-700 hover:underline flex items-center space-x-1"
+                      >
+                        <i className="fas fa-trash-alt text-[10px]"></i>
+                        <span>{t('mailbox.clearAll')}</span>
+                      </button>
+                    </div>
+                    <div className="max-h-48 overflow-y-auto mt-1">
+                      {savedMailboxes.length === 0 ? (
+                        <div className="text-xs text-muted-foreground px-3 py-2 text-center">
+                          {t('common.empty')}
+                        </div>
+                      ) : (
+                        savedMailboxes.map((m) => {
+                          const mDomain = m.domain || selectedDomain;
+                          const fullAddr = `${m.address}@${mDomain}`;
+                          const isActive = m.address === mailbox.address;
+                          return (
+                            <div
+                              key={m.address}
+                              onClick={() => {
+                                onMailboxChange(m);
+                                setIsDropdownOpen(false);
+                              }}
+                              className={`flex items-center justify-between px-3 py-2 text-sm hover:bg-muted cursor-pointer ${
+                                isActive ? 'bg-muted font-medium' : ''
+                              }`}
+                            >
+                              <span
+                                className="flex-1 truncate pr-2 text-xs"
+                                title={fullAddr}
+                              >
+                                {fullAddr}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  deleteMailboxFromSaved(m.address);
+                                }}
+                                className="text-muted-foreground hover:text-red-500 p-1 rounded transition-colors"
+                                title={t('common.delete')}
+                              >
+                                <i className="fas fa-trash text-xs"></i>
+                              </button>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+              
               <div className="relative">
-              <button 
-                onClick={copyToClipboard}
+                <button 
+                  onClick={copyToClipboard}
                   className={`w-8 h-8 ${copyButtonClass}`}
                   aria-label={t('common.copy')}
                   title={t('common.copy')}
-              >
+                >
                   <i className="fas fa-copy text-sm"></i>
                 </button>
                 
@@ -352,13 +495,88 @@ const HeaderMailbox: React.FC<HeaderMailboxProps> = ({
             <div className="flex items-center">
               {renderMobileAddress()}
               
+              {/* 移动端切换邮箱下拉菜单 */}
+              <div className="relative dropdown-container">
+                <button
+                  type="button"
+                  onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+                  className={`w-6 h-6 ${buttonBaseClass} hover:bg-primary/20 hover:text-primary hover:scale-110 ml-1`}
+                  title={t('mailbox.switch')}
+                  aria-label={t('mailbox.switch')}
+                >
+                  <i className="fas fa-exchange-alt text-xs"></i>
+                </button>
+                
+                {isDropdownOpen && (
+                  <div className="absolute left-1/2 transform -translate-x-1/2 mt-2 bg-popover text-popover-foreground border rounded-md shadow-lg py-2 w-64 z-50 text-left">
+                    <div className="flex items-center justify-between px-3 py-1.5 border-b border-muted">
+                      <span className="text-xs font-semibold text-muted-foreground">{t('mailbox.savedMailboxes')}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          clearAllMailboxes();
+                          setIsDropdownOpen(false);
+                        }}
+                        className="text-xs text-red-500 hover:text-red-700 hover:underline flex items-center space-x-1"
+                      >
+                        <i className="fas fa-trash-alt text-[10px]"></i>
+                        <span>{t('mailbox.clearAll')}</span>
+                      </button>
+                    </div>
+                    <div className="max-h-48 overflow-y-auto mt-1">
+                      {savedMailboxes.length === 0 ? (
+                        <div className="text-xs text-muted-foreground px-3 py-2 text-center">
+                          {t('common.empty')}
+                        </div>
+                      ) : (
+                        savedMailboxes.map((m) => {
+                          const mDomain = m.domain || selectedDomain;
+                          const fullAddr = `${m.address}@${mDomain}`;
+                          const isActive = m.address === mailbox.address;
+                          return (
+                            <div
+                              key={m.address}
+                              onClick={() => {
+                                onMailboxChange(m);
+                                setIsDropdownOpen(false);
+                              }}
+                              className={`flex items-center justify-between px-3 py-2 text-sm hover:bg-muted cursor-pointer ${
+                                isActive ? 'bg-muted font-medium' : ''
+                              }`}
+                            >
+                              <span
+                                className="flex-1 truncate pr-2 text-xs"
+                                title={fullAddr}
+                              >
+                                {fullAddr}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  deleteMailboxFromSaved(m.address);
+                                }}
+                                className="text-muted-foreground hover:text-red-500 p-1 rounded transition-colors"
+                                title={t('common.delete')}
+                              >
+                                <i className="fas fa-trash text-xs"></i>
+                              </button>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+              
               <div className="relative">
-              <button 
-                onClick={copyToClipboard}
+                <button 
+                  onClick={copyToClipboard}
                   className={`w-6 h-6 ${copyButtonClass}`}
                   aria-label={t('common.copy')}
                   title={t('common.copy')}
-              >
+                >
                   <i className="fas fa-copy text-xs"></i>
                 </button>
                 
@@ -372,41 +590,43 @@ const HeaderMailbox: React.FC<HeaderMailboxProps> = ({
               </div>
             </div>
             
-            <div className="relative">
-              <button
-                onClick={handleRefreshMailbox}
+            <div className="relative mt-2 flex items-center space-x-2">
+              <div className="relative">
+                <button
+                  onClick={handleRefreshMailbox}
                   className={`w-6 h-6 ${refreshButtonClass}`}
-                disabled={isActionLoading}
+                  disabled={isActionLoading}
                   title={t('mailbox.refresh')}
-              >
+                >
                   <i className="fas fa-sync-alt text-xs"></i>
-              </button>
-              
+                </button>
+                
                 {/* 更新成功提示 */}
-              {showRefreshSuccess && (
+                {showRefreshSuccess && (
                   <div className="absolute top-7 left-1/2 transform -translate-x-1/2 bg-primary text-primary-foreground text-xs py-1 px-2 rounded shadow-lg whitespace-nowrap z-10">
-                  {t('mailbox.refreshSuccess')}
+                    {t('mailbox.refreshSuccess')}
                     <div className="absolute -top-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-primary rotate-45"></div>
-                </div>
-              )}
-            </div>
-    
-          <button
-            onClick={() => setIsCustomMode(true)}
-                className={`w-6 h-6 ${customizeButtonClass}`}
-            disabled={isActionLoading}
-                title={t('mailbox.customize')}
-          >
-                <i className="fas fa-edit text-xs"></i>
-          </button>
-    </div>
+                  </div>
+                )}
+              </div>
       
-      {/* 错误信息显示 */}
-      {(copyError || refreshError) && (
-              <div className="text-red-500 text-xs mt-1">
-          {copyError || refreshError}
-        </div>
-            )}
+              <button
+                onClick={() => setIsCustomMode(true)}
+                className={`w-6 h-6 ${customizeButtonClass}`}
+                disabled={isActionLoading}
+                title={t('mailbox.customize')}
+              >
+                <i className="fas fa-edit text-xs"></i>
+              </button>
+            </div>
+          </div>
+          
+          {/* 错误信息显示 */}
+          {(copyError || refreshError) && (
+            <div className="text-red-500 text-xs mt-1">
+              {copyError || refreshError}
+            </div>
+          )}
         </>
       )}
     </div>

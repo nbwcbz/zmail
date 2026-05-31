@@ -50,7 +50,10 @@
     "refreshFailed": "邮箱更换失败",
     "customize": "自定义邮箱",
     "notFound": "邮箱不存在或已过期",
-    "creatingNew": "正在创建新邮箱..."
+    "creatingNew": "正在创建新邮箱...",
+    "savedMailboxes": "已保存的邮箱",
+    "clearAll": "全部清除",
+    "switch": "切换邮箱"
   },
   "email": {
     "inbox": "收件箱",

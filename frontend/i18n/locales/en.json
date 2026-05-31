@@ -50,7 +50,10 @@
     "refreshFailed": "Failed to change address",
     "customize": "Customize Address",
     "notFound": "Mailbox not found or expired",
-    "creatingNew": "Creating new mailbox..."
+    "creatingNew": "Creating new mailbox...",
+    "savedMailboxes": "Saved Mailboxes",
+    "clearAll": "Clear All",
+    "switch": "Switch Mailbox"
   },
   "email": {
     "inbox": "Inbox",
